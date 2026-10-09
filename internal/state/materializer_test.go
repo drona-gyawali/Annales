@@ -2,14 +2,41 @@ package state
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"testing"
+
+	"github.com/aws/smithy-go"
 
 	"github.com/drona-gyawali/logStore/internal/storage"
 )
 
 type fakeObjectStorage struct {
 	objects map[string][]byte
+}
+
+type fakePreconditionFailed struct{}
+
+func (fakePreconditionFailed) Error() string {
+	return "precondition failed"
+}
+
+func (fakePreconditionFailed) ErrorCode() string {
+	return "PreconditionFailed"
+}
+
+func (fakePreconditionFailed) ErrorMessage() string {
+	return "precondition failed"
+}
+
+func (fakePreconditionFailed) ErrorFault() smithy.ErrorFault {
+	return smithy.FaultClient
+}
+
+func fakeETag(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func newFakeObjectStorage() *fakeObjectStorage {
@@ -27,7 +54,7 @@ func (f *fakeObjectStorage) Get(
 		return nil, "", fmt.Errorf("object %q not found", key)
 	}
 
-	return data, "fake-etag", nil
+	return data, fakeETag(data), nil
 }
 
 func (f *fakeObjectStorage) Put(
@@ -36,7 +63,7 @@ func (f *fakeObjectStorage) Put(
 	data []byte,
 ) (string, error) {
 	f.objects[key] = data
-	return "fake-etag", nil
+	return fakeETag(data), nil
 }
 
 func (f *fakeObjectStorage) PutIfMatch(
@@ -45,8 +72,13 @@ func (f *fakeObjectStorage) PutIfMatch(
 	data []byte,
 	etag string,
 ) (string, error) {
+	current, exists := f.objects[key]
+	if !exists || fakeETag(current) != etag {
+		return "", fakePreconditionFailed{}
+	}
+
 	f.objects[key] = data
-	return "fake-etag", nil
+	return fakeETag(data), nil
 }
 
 func (f *fakeObjectStorage) PutIfNoneMatch(
@@ -55,11 +87,11 @@ func (f *fakeObjectStorage) PutIfNoneMatch(
 	data []byte,
 ) (string, error) {
 	if _, exists := f.objects[key]; exists {
-		return "", fmt.Errorf("object %q already exists", key)
+		return "", fakePreconditionFailed{}
 	}
 
 	f.objects[key] = data
-	return "fake-etag", nil
+	return fakeETag(data), nil
 }
 
 func (f *fakeObjectStorage) Delete(
@@ -71,239 +103,190 @@ func (f *fakeObjectStorage) Delete(
 }
 
 var _ storage.ObjectStorage = (*fakeObjectStorage)(nil)
+var _ smithy.APIError = fakePreconditionFailed{}
 
 func TestMaterializer(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeObjectStorage()
 
-	// Snapshot at sequence 2.
-	snapshotData := []byte(`{
+	store.objects["snapshots/snapshot-000002.json"] = []byte(`{
 		"sequence_id": 2,
-		"data": {
-			"user:1": "Alice",
-			"user:2": "Bob"
-		}
+		"last_log_key": "logs/2.json",
+		"data": {"user:1": "Alice", "user:2": "Bob"}
 	}`)
 
-	store.objects["snapshots/snapshot-000002.json"] = snapshotData
-
-	// Log 2 — snapshot boundary.
-	log2 := []byte(`{
-	  "sequence_id": 2,
-	  "prev_log_key": "",
-	  "operations": []
-       }`)
-
-	store.objects["logs/2.json"] = log2
-
-	// Log 3.
-	log3 := []byte(`{
+	store.objects["logs/3.json"] = []byte(`{
 		"sequence_id": 3,
 		"prev_log_key": "logs/2.json",
 		"operations": [
-			{
-				"operation": "SET",
-				"key": "user:1",
-				"value": "Charlie"
-			}
+			{"operation": "SET", "key": "user:1", "value": "Charlie"}
 		]
 	}`)
 
-	store.objects["logs/3.json"] = log3
-
-	// Log 4.
-	log4 := []byte(`{
+	store.objects["logs/4.json"] = []byte(`{
 		"sequence_id": 4,
 		"prev_log_key": "logs/3.json",
 		"operations": [
-			{
-				"operation": "DELETE",
-				"key": "user:2"
-			},
-			{
-				"operation": "SET",
-				"key": "user:3",
-				"value": "David"
-			}
+			{"operation": "DELETE", "key": "user:2", "value": ""},
+			{"operation": "SET", "key": "user:3", "value": "David"}
 		]
 	}`)
 
-	store.objects["logs/4.json"] = log4
-
-	// Current manifest points to log 4
-	// and says the snapshot is at sequence 2.
-	manifestData := []byte(`{
+	store.objects["index.json"] = []byte(`{
 		"current_seq": 4,
 		"current_log_key": "logs/4.json",
 		"current_snapshot_seq": 2
 	}`)
 
-	store.objects["index.json"] = manifestData
-
-	materializer := NewMaterializer(store)
-
-	state, err := materializer.Materialize(ctx)
+	state, err := NewMaterializer(store).Materialize(ctx)
 	if err != nil {
 		t.Fatalf("Materialize() failed: %v", err)
 	}
 
-	// user:1 should have been updated by log 3.
-	value, ok := state.Get("user:1")
-	if !ok {
-		t.Fatal("expected user:1 to exist")
+	if value, ok := state.Get("user:1"); !ok || value != "Charlie" {
+		t.Fatalf("expected user:1=Charlie, got %q, exists=%v", value, ok)
 	}
 
-	if value != "Charlie" {
-		t.Fatalf("expected user:1=Charlie, got %q", value)
-	}
-
-	// user:2 existed in the snapshot but was deleted by log 4.
-	_, ok = state.Get("user:2")
-	if ok {
+	if _, ok := state.Get("user:2"); ok {
 		t.Fatal("expected user:2 to be deleted")
 	}
 
-	// user:3 was created by log 4.
-	value, ok = state.Get("user:3")
-	if !ok {
-		t.Fatal("expected user:3 to exist")
-	}
-
-	if value != "David" {
-		t.Fatalf("expected user:3=David, got %q", value)
+	if value, ok := state.Get("user:3"); !ok || value != "David" {
+		t.Fatalf("expected user:3=David, got %q, exists=%v", value, ok)
 	}
 }
 
 func TestMaterializerWithoutSnapshot(t *testing.T) {
-	ctx := context.Background()
 	store := newFakeObjectStorage()
 
-	// Log 1.
-	log1 := []byte(`{
-		"sequence_id": 1,
-		"prev_log_key": "",
-		"operations": [
-			{
-				"operation": "SET",
-				"key": "user:1",
-				"value": "Alice"
-			}
-		]
+	store.objects["logs/1.json"] = []byte(`{
+		"sequence_id": 1, "prev_log_key": "",
+		"operations": [{"operation": "SET", "key": "user:1", "value": "Alice"}]
 	}`)
-
-	store.objects["logs/1.json"] = log1
-
-	// Log 2.
-	log2 := []byte(`{
-		"sequence_id": 2,
-		"prev_log_key": "logs/1.json",
-		"operations": [
-			{
-				"operation": "SET",
-				"key": "user:2",
-				"value": "Bob"
-			}
-		]
+	store.objects["logs/2.json"] = []byte(`{
+		"sequence_id": 2, "prev_log_key": "logs/1.json",
+		"operations": [{"operation": "SET", "key": "user:2", "value": "Bob"}]
 	}`)
-
-	store.objects["logs/2.json"] = log2
-
-	// Log 3.
-	log3 := []byte(`{
-		"sequence_id": 3,
-		"prev_log_key": "logs/2.json",
-		"operations": [
-			{
-				"operation": "SET",
-				"key": "user:1",
-				"value": "Charlie"
-			}
-		]
+	store.objects["logs/3.json"] = []byte(`{
+		"sequence_id": 3, "prev_log_key": "logs/2.json",
+		"operations": [{"operation": "SET", "key": "user:1", "value": "Charlie"}]
 	}`)
-
-	store.objects["logs/3.json"] = log3
-
-	// No snapshot exists.
-	manifestData := []byte(`{
-		"current_seq": 3,
-		"current_log_key": "logs/3.json",
+	store.objects["index.json"] = []byte(`{
+		"current_seq": 3, "current_log_key": "logs/3.json",
 		"current_snapshot_seq": 0
 	}`)
 
-	store.objects["index.json"] = manifestData
-
-	materializer := NewMaterializer(store)
-
-	state, err := materializer.Materialize(ctx)
+	state, err := NewMaterializer(store).Materialize(context.Background())
 	if err != nil {
 		t.Fatalf("Materialize() failed: %v", err)
 	}
 
-	// user:1 should have been updated by log 3.
-	value, ok := state.Get("user:1")
-	if !ok {
-		t.Fatal("expected user:1 to exist")
+	if value, ok := state.Get("user:1"); !ok || value != "Charlie" {
+		t.Fatalf("expected user:1=Charlie, got %q, exists=%v", value, ok)
 	}
-
-	if value != "Charlie" {
-		t.Fatalf("expected user:1=Charlie, got %q", value)
-	}
-
-	// user:2 should come from log 2.
-	value, ok = state.Get("user:2")
-	if !ok {
-		t.Fatal("expected user:2 to exist")
-	}
-
-	if value != "Bob" {
-		t.Fatalf("expected user:2=Bob, got %q", value)
+	if value, ok := state.Get("user:2"); !ok || value != "Bob" {
+		t.Fatalf("expected user:2=Bob, got %q, exists=%v", value, ok)
 	}
 }
 
 func TestMaterializerMissingManifest(t *testing.T) {
-	ctx := context.Background()
 	store := newFakeObjectStorage()
-
-	materializer := NewMaterializer(store)
-
-	_, err := materializer.Materialize(ctx)
-	if err == nil {
+	if _, err := NewMaterializer(store).Materialize(context.Background()); err == nil {
 		t.Fatal("expected error when index.json is missing")
 	}
 }
 
 func TestMaterializerInvalidManifest(t *testing.T) {
-	ctx := context.Background()
 	store := newFakeObjectStorage()
+	store.objects["index.json"] = []byte(`{"current_seq":`)
 
-	store.objects["index.json"] = []byte(`{
-		"current_seq": 4,
-		"current_log_key":
-	}`)
-
-	materializer := NewMaterializer(store)
-
-	_, err := materializer.Materialize(ctx)
-	if err == nil {
+	if _, err := NewMaterializer(store).Materialize(context.Background()); err == nil {
 		t.Fatal("expected error when index.json is invalid")
 	}
 }
 
 func TestMaterializerMissingLog(t *testing.T) {
-	ctx := context.Background()
 	store := newFakeObjectStorage()
-
-	// Manifest points to a log that does not exist.
 	store.objects["index.json"] = []byte(`{
-		"current_seq": 1,
-		"current_log_key": "logs/1.json",
+		"current_seq": 1, "current_log_key": "logs/1.json",
 		"current_snapshot_seq": 0
 	}`)
 
-	materializer := NewMaterializer(store)
-
-	_, err := materializer.Materialize(ctx)
-	if err == nil {
+	if _, err := NewMaterializer(store).Materialize(context.Background()); err == nil {
 		t.Fatal("expected error when log is missing")
+	}
+}
+
+func TestMaterializerBrokenLogChain(t *testing.T) {
+	store := newFakeObjectStorage()
+	store.objects["snapshots/snapshot-000002.json"] = []byte(`{
+		"sequence_id": 2, "last_log_key": "logs/2.json",
+		"data": {"user:1": "Alice"}
+	}`)
+	store.objects["logs/3.json"] = []byte(`{
+		"sequence_id": 3, "prev_log_key": "logs/missing.json",
+		"operations": [{"operation": "SET", "key": "user:1", "value": "Charlie"}]
+	}`)
+	store.objects["index.json"] = []byte(`{
+		"current_seq": 3, "current_log_key": "logs/3.json",
+		"current_snapshot_seq": 2
+	}`)
+
+	if _, err := NewMaterializer(store).Materialize(context.Background()); err == nil {
+		t.Fatal("expected error when log chain does not reach snapshot boundary")
+	}
+}
+
+func TestMaterializerRejectsSequenceMismatch(t *testing.T) {
+	store := newFakeObjectStorage()
+	store.objects["logs/3.json"] = []byte(`{
+		"sequence_id": 7, "prev_log_key": "logs/2.json",
+		"operations": []
+	}`)
+	store.objects["index.json"] = []byte(`{
+		"current_seq": 3, "current_log_key": "logs/3.json",
+		"current_snapshot_seq": 0
+	}`)
+
+	if _, err := NewMaterializer(store).Materialize(context.Background()); err == nil {
+		t.Fatal("expected error for log sequence mismatch")
+	}
+}
+
+func TestMaterializerIgnoresOrphanLog(t *testing.T) {
+	store := newFakeObjectStorage()
+
+	// This is the committed log chain.
+	store.objects["logs/1-committed.json"] = []byte(`{
+		"sequence_id": 1,
+		"prev_log_key": "",
+		"operations": [
+			{"operation": "SET", "key": "user:1", "value": "Alice"}
+		]
+	}`)
+
+	// This log exists in storage but is not referenced by the manifest
+	// or by any log in the committed chain.
+	store.objects["logs/1-orphan.json"] = []byte(`{
+		"sequence_id": 1,
+		"prev_log_key": "",
+		"operations": [
+			{"operation": "SET", "key": "user:1", "value": "Mallory"}
+		]
+	}`)
+
+	store.objects["index.json"] = []byte(`{
+		"current_seq": 1,
+		"current_log_key": "logs/1-committed.json",
+		"current_snapshot_seq": 0
+	}`)
+
+	state, err := NewMaterializer(store).Materialize(context.Background())
+	if err != nil {
+		t.Fatalf("Materialize() failed: %v", err)
+	}
+
+	if value, ok := state.Get("user:1"); !ok || value != "Alice" {
+		t.Fatalf("expected committed value Alice, got %q, exists=%v", value, ok)
 	}
 }

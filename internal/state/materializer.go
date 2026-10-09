@@ -33,7 +33,6 @@ func (m *Materializer) loadManifest(
 	}
 
 	var current manifest.IndexManifest
-
 	if err := json.Unmarshal(data, &current); err != nil {
 		return manifest.IndexManifest{}, fmt.Errorf(
 			"decode manifest: %w",
@@ -58,7 +57,6 @@ func (m *Materializer) loadLog(
 	}
 
 	var batch log.LogBatch
-
 	if err := json.Unmarshal(data, &batch); err != nil {
 		return log.LogBatch{}, fmt.Errorf(
 			"decode log %q: %w",
@@ -73,25 +71,57 @@ func (m *Materializer) loadLog(
 func (m *Materializer) loadLogChain(
 	ctx context.Context,
 	startKey string,
+	snapshotLastLogKey string,
+	currentSeq uint64,
 	snapshotSeq uint64,
 ) ([]log.LogBatch, error) {
 	var batches []log.LogBatch
 
 	currentKey := startKey
+	expectedSeq := currentSeq
 
-	for currentKey != "" {
+	for currentKey != "" && currentKey != snapshotLastLogKey {
+		if expectedSeq == 0 ||
+			(snapshotLastLogKey != "" && expectedSeq <= snapshotSeq) {
+			return nil, fmt.Errorf(
+				"unexpected log %q at or before snapshot sequence %d",
+				currentKey,
+				snapshotSeq,
+			)
+		}
+
 		batch, err := m.loadLog(ctx, currentKey)
 		if err != nil {
 			return nil, err
 		}
 
-		if batch.SequenceID <= snapshotSeq {
-			break
+		if batch.SequenceID != expectedSeq {
+			return nil, fmt.Errorf(
+				"log %q has sequence %d; expected %d",
+				currentKey,
+				batch.SequenceID,
+				expectedSeq,
+			)
 		}
 
 		batches = append(batches, batch)
-
 		currentKey = batch.PrevLogKey
+		expectedSeq--
+	}
+
+	if snapshotLastLogKey != "" && currentKey != snapshotLastLogKey {
+		return nil, fmt.Errorf(
+			"log chain did not reach snapshot boundary %q",
+			snapshotLastLogKey,
+		)
+	}
+
+	if expectedSeq != snapshotSeq {
+		return nil, fmt.Errorf(
+			"log chain ended at sequence %d; expected snapshot sequence %d",
+			expectedSeq,
+			snapshotSeq,
+		)
 	}
 
 	return batches, nil
@@ -122,7 +152,6 @@ func (m *Materializer) loadSnapshot(
 	}
 
 	var snap snapshot.Snapshot
-
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return snapshot.Snapshot{}, fmt.Errorf(
 			"decode snapshot %q: %w",
@@ -143,29 +172,52 @@ func (m *Materializer) Materialize(
 	}
 
 	state := New()
+	snapshotSeq := currentManifest.CurrentSnapshotSeq
+	snapshotLastLogKey := ""
 
-	// Restore the latest snapshot if one exists.
-	if currentManifest.CurrentSnapshotSeq > 0 {
-		snap, err := m.loadSnapshot(
-			ctx,
-			currentManifest.CurrentSnapshotSeq,
-		)
+	if snapshotSeq > 0 {
+		snap, err := m.loadSnapshot(ctx, snapshotSeq)
 		if err != nil {
 			return nil, err
 		}
 
+		if snap.SequenceID != snapshotSeq {
+			return nil, fmt.Errorf(
+				"snapshot sequence mismatch: manifest says %d, snapshot says %d",
+				snapshotSeq,
+				snap.SequenceID,
+			)
+		}
+
+		if snap.LastLogKey == "" {
+			return nil, fmt.Errorf(
+				"snapshot at sequence %d has no last log key",
+				snapshotSeq,
+			)
+		}
+
 		state.Load(snap.Data)
+		snapshotLastLogKey = snap.LastLogKey
 	}
 
-	// Replay only logs newer than the snapshot.
 	if currentManifest.CurrentLogKey == "" {
+		if currentManifest.CurrentSeq != snapshotSeq {
+			return nil, fmt.Errorf(
+				"manifest has current sequence %d but no current log key; snapshot sequence is %d",
+				currentManifest.CurrentSeq,
+				snapshotSeq,
+			)
+		}
+
 		return state, nil
 	}
 
 	batches, err := m.loadLogChain(
 		ctx,
 		currentManifest.CurrentLogKey,
-		currentManifest.CurrentSnapshotSeq,
+		snapshotLastLogKey,
+		currentManifest.CurrentSeq,
+		snapshotSeq,
 	)
 	if err != nil {
 		return nil, err

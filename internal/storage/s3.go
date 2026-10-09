@@ -42,7 +42,7 @@ func (s *S3Storage) Get(
 	if err != nil {
 		return nil, "", err
 	}
-	defer output.Body.Close()
+	defer func() { _ = output.Body.Close() }()
 
 	data, err := io.ReadAll(output.Body)
 	if err != nil {
@@ -154,6 +154,10 @@ func (s *S3Storage) Append(
 ) error {
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("append cancelled: %w", err)
+		}
+
 		data, etag, err := s.Get(ctx, "index.json")
 		if err != nil {
 			return fmt.Errorf("get manifest: %w", err)

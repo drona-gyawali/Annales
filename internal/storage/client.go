@@ -41,6 +41,7 @@ func NewS3StorageFromEnv(ctx context.Context) (*S3Storage, error) {
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		if cfg.Endpoint != "" {
 			o.BaseEndpoint = &cfg.Endpoint
+			o.UsePathStyle = true
 		}
 	})
 
