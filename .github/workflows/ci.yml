@@ -68,3 +68,50 @@ jobs:
         with:
           version: v2.14.0
           args: --timeout=5m
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+
+    services:
+      minio:
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: annales_it_admin
+          MINIO_ROOT_PASSWORD: annales_it_test_password_928374
+        ports:
+          - 19000:9000
+        options: >-
+          --health-cmd "curl -sf http://localhost:9000/minio/health/live"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Create integration bucket
+        run: |
+          curl -sf http://127.0.0.1:19000/minio/health/live
+          docker run --rm --network host \
+            minio/mc:latest \
+            sh -c "
+              mc alias set integration http://127.0.0.1:19000 annales_it_admin annales_it_test_password_928374 &&
+              mc mb integration/annales-integration
+            "
+
+      - name: Run integration tests
+        env:
+          S3_ENDPOINT: http://127.0.0.1:19000
+          S3_REGION: us-east-1
+          S3_BUCKET: annales-integration
+          AWS_ACCESS_KEY_ID: annales_it_admin
+          AWS_SECRET_ACCESS_KEY: annales_it_test_password_928374
+        run: go test -count=1 -v ./internal/integration/...

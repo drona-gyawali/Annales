@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/drona-gyawali/logStore/internal/engine"
+	"github.com/drona-gyawali/logStore/internal/state"
 	"github.com/drona-gyawali/logStore/internal/storage"
 )
 
@@ -176,6 +177,10 @@ func main() {
 	if err := app.Initialize(ctx); err != nil {
 		log.Fatalf("initialize engine: %v", err)
 	}
+	// TODO: We should probably run the compactor in a separate process, but for now
+	// TODO: We have to make the timer more dynamic by including in env with var like COMPACTION_INTERVAL
+	bgCompactor := state.NewBackgroundCompactor(store, 5*time.Minute)
+	go bgCompactor.Run(ctx)
 
 	addr := strings.TrimSpace(os.Getenv("ANNALES_ADDR"))
 	if addr == "" {
