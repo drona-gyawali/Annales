@@ -156,3 +156,41 @@ func isCompactionConflict(err error) bool {
 	return errors.As(err, &apiErr) &&
 		apiErr.ErrorCode() == "PreconditionFailed"
 }
+
+// DeleteOldLogs removes log objects whose sequence is at or below
+// the snapshot sequence. Call after Compact succeeds.
+func (c *Compactor) DeleteOldLogs(ctx context.Context) error {
+	data, _, err := c.storage.Get(ctx, "index.json")
+	if err != nil {
+		return fmt.Errorf("get manifest: %w", err)
+	}
+
+	var current manifest.IndexManifest
+	if err := json.Unmarshal(data, &current); err != nil {
+		return fmt.Errorf("decode manifest: %w", err)
+	}
+
+	if current.CurrentSnapshotSeq == 0 {
+		return nil
+	}
+
+	keys, err := c.storage.List(ctx, "logs/")
+	if err != nil {
+		return fmt.Errorf("list logs: %w", err)
+	}
+
+	for _, key := range keys {
+		var seq uint64
+		if _, err := fmt.Sscanf(key, "logs/%d-", &seq); err != nil {
+			continue
+		}
+		if seq > current.CurrentSnapshotSeq {
+			continue
+		}
+		if err := c.storage.Delete(ctx, key); err != nil {
+			return fmt.Errorf("delete log %q: %w", key, err)
+		}
+	}
+
+	return nil
+}

@@ -13,10 +13,11 @@ import (
 )
 
 type fakeStorage struct {
-	mu      sync.Mutex
-	objects map[string][]byte
-	seq     uint64
-	lastKey string
+	mu        sync.Mutex
+	objects   map[string][]byte
+	seq       uint64
+	lastKey   string
+	appendErr error
 }
 
 func newFakeStorage() *fakeStorage {
@@ -100,12 +101,20 @@ func (f *fakeStorage) Delete(
 	return nil
 }
 
+func (f *fakeStorage) List(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+
 func (f *fakeStorage) Append(
 	ctx context.Context,
 	operations []log.LogEntry,
 ) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.appendErr != nil {
+		return f.appendErr
+	}
 
 	if err := ctx.Err(); err != nil {
 		return err
@@ -210,5 +219,84 @@ func TestEngineSetGetDelete(t *testing.T) {
 	}
 	if exists {
 		t.Fatal("expected user:1 to be deleted")
+	}
+}
+func TestEngineSetDoesNotUpdateRAMWhenAppendFails(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStorage()
+
+	initialManifest, err := json.Marshal(manifest.IndexManifest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Put(ctx, "index.json", initialManifest); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := New(store)
+	if err := engine.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize returned error: %v", err)
+	}
+
+	appendFailure := errors.New("simulated durable storage failure")
+
+	store.mu.Lock()
+	store.appendErr = appendFailure
+	store.mu.Unlock()
+
+	err = engine.Set(ctx, "user:failure", "should-not-appear")
+	if !errors.Is(err, appendFailure) {
+		t.Fatalf("Set error = %v, want %v", err, appendFailure)
+	}
+
+	value, exists, err := engine.Get(ctx, "user:failure")
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if exists {
+		t.Fatalf("failed Set became visible in RAM: value = %q", value)
+	}
+}
+
+func TestEngineDeleteDoesNotUpdateRAMWhenAppendFails(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStorage()
+
+	initialManifest, err := json.Marshal(manifest.IndexManifest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Put(ctx, "index.json", initialManifest); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := New(store)
+	if err := engine.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize returned error: %v", err)
+	}
+
+	if err := engine.Set(ctx, "user:1", "Alice"); err != nil {
+		t.Fatalf("initial Set returned error: %v", err)
+	}
+
+	appendFailure := errors.New("simulated durable storage failure")
+
+	store.mu.Lock()
+	store.appendErr = appendFailure
+	store.mu.Unlock()
+
+	err = engine.Delete(ctx, "user:1")
+	if !errors.Is(err, appendFailure) {
+		t.Fatalf("Delete error = %v, want %v", err, appendFailure)
+	}
+
+	value, exists, err := engine.Get(ctx, "user:1")
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if !exists || value != "Alice" {
+		t.Fatalf("failed Delete changed RAM state: value = %q, exists = %v; want Alice, true", value, exists)
 	}
 }

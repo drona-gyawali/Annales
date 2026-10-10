@@ -102,6 +102,10 @@ func (f *fakeObjectStorage) Delete(
 	return nil
 }
 
+func (f *fakeObjectStorage) List(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+
 var _ storage.ObjectStorage = (*fakeObjectStorage)(nil)
 var _ smithy.APIError = fakePreconditionFailed{}
 

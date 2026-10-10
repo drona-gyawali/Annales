@@ -68,3 +68,58 @@ jobs:
         with:
           version: v2.14.0
           args: --timeout=5m
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Start MinIO
+        run: |
+          docker run -d \
+            --name minio \
+            -p 19000:9000 \
+            -e MINIO_ROOT_USER=annales_it_admin \
+            -e MINIO_ROOT_PASSWORD=annales_it_test_password_928374 \
+            pgsty/minio:RELEASE.2026-08-04T00-00-00Z \
+            server /data
+
+      - name: Wait for MinIO
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:19000/minio/health/live; then
+              echo "MinIO is ready"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "MinIO did not become healthy"
+              docker logs minio
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Create integration bucket
+        run: |
+          docker run --rm --network host \
+            -e MC_HOST_integration=http://annales_it_admin:annales_it_test_password_928374@127.0.0.1:19000 \
+            pgsty/mc:latest \
+            mb --ignore-existing integration/annales-integration
+
+      - name: Run integration tests
+        env:
+          S3_ENDPOINT: http://127.0.0.1:19000
+          S3_REGION: us-east-1
+          S3_BUCKET: annales-integration
+          AWS_ACCESS_KEY_ID: annales_it_admin
+          AWS_SECRET_ACCESS_KEY: annales_it_test_password_928374
+        run: go test -count=1 -v ./internal/integration/...
