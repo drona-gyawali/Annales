@@ -105,8 +105,6 @@ func (f *fakeStorage) List(_ context.Context, _ string) ([]string, error) {
 	return nil, nil
 }
 
-
-
 func (f *fakeStorage) Append(
 	ctx context.Context,
 	operations []log.LogEntry,

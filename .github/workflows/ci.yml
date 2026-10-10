@@ -75,7 +75,7 @@ jobs:
 
     services:
       minio:
-        image: minio/minio:latest
+        image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
         env:
           MINIO_ROOT_USER: annales_it_admin
           MINIO_ROOT_PASSWORD: annales_it_test_password_928374
@@ -101,7 +101,7 @@ jobs:
         run: |
           curl -sf http://127.0.0.1:19000/minio/health/live
           docker run --rm --network host \
-            minio/mc:latest \
+            pgsty/mc:latest \
             sh -c "
               mc alias set integration http://127.0.0.1:19000 annales_it_admin annales_it_test_password_928374 &&
               mc mb integration/annales-integration

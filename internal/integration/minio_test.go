@@ -1,10 +1,9 @@
-
 package integration
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -384,7 +383,6 @@ func TestMinIOFailedManifestCommitLeavesUncommittedLog(t *testing.T) {
 	if err := e.Initialize(ctx); err != nil {
 		t.Fatalf("initialize engine: %v", err)
 	}
-
 
 	if err := e.Set(ctx, "before-crash", "value"); err != nil {
 		t.Fatalf("set before crash: %v", err)
