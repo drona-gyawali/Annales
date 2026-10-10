@@ -73,20 +73,6 @@ jobs:
     name: Integration tests
     runs-on: ubuntu-latest
 
-    services:
-      minio:
-        image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
-        env:
-          MINIO_ROOT_USER: annales_it_admin
-          MINIO_ROOT_PASSWORD: annales_it_test_password_928374
-        ports:
-          - 19000:9000
-        options: >-
-          --health-cmd "curl -sf http://localhost:9000/minio/health/live"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -97,9 +83,33 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Start MinIO
+        run: |
+          docker run -d \
+            --name minio \
+            -p 19000:9000 \
+            -e MINIO_ROOT_USER=annales_it_admin \
+            -e MINIO_ROOT_PASSWORD=annales_it_test_password_928374 \
+            pgsty/minio:RELEASE.2026-08-04T00-00-00Z \
+            server /data
+
+      - name: Wait for MinIO
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:19000/minio/health/live; then
+              echo "MinIO is ready"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "MinIO did not become healthy"
+              docker logs minio
+              exit 1
+            fi
+            sleep 2
+          done
+
       - name: Create integration bucket
         run: |
-          curl -sf http://127.0.0.1:19000/minio/health/live
           docker run --rm --network host \
             pgsty/mc:latest \
             sh -c "
