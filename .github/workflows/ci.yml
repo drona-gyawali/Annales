@@ -111,11 +111,9 @@ jobs:
       - name: Create integration bucket
         run: |
           docker run --rm --network host \
+            -e MC_HOST_integration=http://annales_it_admin:annales_it_test_password_928374@127.0.0.1:19000 \
             pgsty/mc:latest \
-            sh -c "
-              mc alias set integration http://127.0.0.1:19000 annales_it_admin annales_it_test_password_928374 &&
-              mc mb integration/annales-integration
-            "
+            mb --ignore-existing integration/annales-integration
 
       - name: Run integration tests
         env:
