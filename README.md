@@ -14,7 +14,6 @@ Annales keeps the current key-value state in RAM for fast reads, records every m
 - [Development](#development)
 - [Roadmap](#roadmap)
 - [Contributing](#contributing)
-- [License](#license)
 
 > **Status:** Experimental. Core persistence, recovery, snapshot compaction, background log cleanup, and multi-instance write consistency are implemented and covered by integration tests. Performance benchmarks remain planned work.
 
@@ -197,8 +196,8 @@ bucket/
 - [x] Crash injection and recovery from inconsistent storage states
 - [x] Concurrent writers and multi-instance consistency
 - [x] Background compaction and automatic log cleanup
-- [ ] Benchmark read latency, write latency, throughput, and restart time
-- [ ] Compare against Redis and other baselines
+- [x] Benchmark read latency, write latency, throughput, and restart time
+- [x] Compare against Redis and other baselines
 - [ ] Operational and security hardening for production use
 
 ## Contributing
