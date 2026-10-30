@@ -27,10 +27,10 @@ import (
 )
 
 const (
-	baseURL    = "http://localhost:8080"
-	totalOps   = 10_000
-	valueSize  = 64 // bytes per value, fixed for reproducibility
-	warmupOps  = 200
+	baseURL   = "http://localhost:8080"
+	totalOps  = 10_000
+	valueSize = 64 // bytes per value, fixed for reproducibility
+	warmupOps = 200
 )
 
 // ── helpers ──────────────────────────────────────────────────────────────────
