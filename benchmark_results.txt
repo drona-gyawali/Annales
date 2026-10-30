@@ -1,0 +1,22 @@
+══════════════════════════════════════════════════
+  Annales Write Throughput Benchmark
+  10000 operations, value size 64 bytes, 200 warmup ops
+══════════════════════════════════════════════════
+  Concurrency   Successes     Errors        Elapsed     ops/s   
+  ──────────────────────────────────────────────
+  10            10000         0             29.162s     343
+  50            10000         0             29.883s     335
+  100           10000         0             32.683s     306
+
+══════════════════════════════════════════════════
+  Annales Cache-Hit Read Latency Benchmark
+  10000 sequential reads, single key (RAM-served)
+══════════════════════════════════════════════════
+  Run 1 — successful reads: 10000  errors: 0
+    P50: 0.123 ms  P95: 0.147 ms  P99: 0.213 ms
+  Run 2 — successful reads: 10000  errors: 0
+    P50: 0.119 ms  P95: 0.137 ms  P99: 0.174 ms
+
+Benchmark complete.
+NOTE: ops/s counts ONLY responses with HTTP 204 (writes) or 200 (reads).
+      Errors are printed above and excluded from all reported figures.

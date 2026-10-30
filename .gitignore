@@ -30,4 +30,3 @@ go.work.sum
 # .idea/
 # .vscode/
 .env.integration
-benchmark
