@@ -30,3 +30,4 @@ go.work.sum
 # .idea/
 # .vscode/
 .env.integration
+.DS_Store
